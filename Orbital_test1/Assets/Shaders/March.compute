@@ -1,0 +1,208 @@
+#pragma kernel March
+//#pragma kernel ClearUnused
+#include "Assets/Shaders/NoisePlugin/TriangulationTable.compute"
+
+// uses some param and handling from and implmentation idea from 
+// https://github.com/keijiro/ComputeMarchingCubes/blob/main/Assets/MarchingCubes/MarchingCubes.compute
+
+#define SIZEOF_UINT 4
+#define SIZEOF_FLOAT3 12
+
+struct Vertex
+{
+    float3 pos;
+    float3 normal;
+};
+
+struct Triangle
+{
+    Vertex vert1;
+    Vertex vert2;
+    Vertex vert3;
+};
+
+float isovalue;
+int chunkRes; // 1 to 1 to noise3D dimension
+float chunkSize;
+int3 chunkIndex; // chunk index
+uint MaxTriangle;
+
+AppendStructuredBuffer<Triangle> trianglesBuf;
+
+// 3 values for vertex x,y,z,1 value for noise value
+RWStructuredBuffer<float> voxel;
+
+// guide
+//https://docs.microsoft.com/en-us/windows/win32/direct3d9/rendering-from-vertex-and-index-buffers
+
+RWByteAddressBuffer VertexBuffer; 
+// struct
+// -> float3 vert
+// -> float3 normal
+
+
+RWByteAddressBuffer IndexBuffer;
+// struct
+// -> uint indice
+
+RWStructuredBuffer<uint> counter; // for counting
+
+//AppendStructuredBuffer<Triangle> trianglesBuf;
+
+// write to vert buffer
+void WriteVertex(uint offset, float3 p, float3 n)
+{
+    uint addr_p = offset * SIZEOF_FLOAT3 * 2;
+    uint addr_n = addr_p + SIZEOF_FLOAT3;
+    VertexBuffer.Store3(addr_p, asuint(p));
+    VertexBuffer.Store3(addr_n, asuint(n));
+}
+
+// write to index buffer
+void WriteIndices(uint offset, uint3 indices)
+{
+    IndexBuffer.Store3(offset * SIZEOF_UINT, indices);
+}
+
+float getNoise(uint3 id)
+{
+    return voxel[id.z + (chunkRes + 1) * (id.y + (chunkRes + 1) * id.x)];
+}
+
+//float3 getNormal(uint3 id)
+//{
+//    // in a 3d noise field, del at a pt
+//    // repr the vector showing the most change
+//    // which in a gradient noise field
+//    // means a vector pointing into the surface if there is any
+//    // by reversing the subtracting operation
+//    // we will get the normal vector at the index id
+//    uint x1, y1, z1,x2,y2,z2;
+//    x1 = max(id.x, 1) - 1;
+//    y1 = max(id.y, 1) - 1;
+//    z1 = max(id.z, 1) - 1;
+    
+//    x2 = min(id.x + 1, chunkRes);
+//    y2 = min(id.y + 1, chunkRes);
+//    z2 = min(id.z + 1, chunkRes);
+    
+//    float dx, dy, dz;
+//    dx = float(getNoise(x1) - getNoise(x2));
+//    dy = float(getNoise(y1) - getNoise(y2));
+//    dz = float(getNoise(z1) - getNoise(z2));
+//    return normalize(float3(dx, dy, dz));
+//}
+
+float3 triangleNorm(float3 v1, float3 v2, float3 v3)
+{
+    float3 A = v1 - v2;
+    float3 B = v3 - v2;
+    return -normalize(cross(A, B));
+} 
+
+static uint3 cubeOffset(uint3 id, uint index)
+{
+    //abc       x y z
+    //000   0 - 0 0 0
+    //001   1 - 1 0 0 
+    //010   2 - 1 0 1 
+    //011   3 - 0 0 1 
+    //100   4 - 0 1 0 
+    //101   5 - 1 1 0 
+    //110   6 - 1 1 1 
+    //111   7 - 0 1 1 
+    bool c = index & 1;
+    bool b = index & 2;
+    bool a = index & 4;
+    
+    return id + uint3(b ^ c, a, b);
+}
+
+[numthreads(8,8,8)] 
+void March (uint3 id : SV_DispatchThreadID)
+{    
+    if (any(id.xyz >= chunkRes))
+        return;
+   
+    
+    float step = chunkSize / chunkRes;
+    float3 vert[8];
+    //float3 grad[8];
+    float n[8];
+    uint cubeindex = 0;
+    
+    for (int i = 0; i < 8; ++i)
+    {
+        //uint3 offsetIndex = id + CornerMapper[i]; //cubeOffset(id, i);
+        uint3 offsetIndex = cubeOffset(id, i); // get corner index
+        //grad[i] = getNormal(offsetIndex);
+        n[i] = getNoise(offsetIndex); // get noise val
+        vert[i] = ((int3(offsetIndex) + chunkRes * chunkIndex - (chunkRes >>1))) * step; // transform local corner pos to world corner pos
+        cubeindex |= (n[i] < isovalue) << i; // calculate configuration
+    }
+
+    if (cubeindex == 0 || cubeindex == 255)
+        return;
+    
+    float3 vertlist[12];
+    float3 normals[12];
+    
+    for (i = 0; i < 12; ++i)
+    {
+        uint2 pair = interpolationMapper[i];
+        float lerpVal = (isovalue - n[pair.x]) / (n[pair.y] - n[pair.x]);
+
+        vertlist[i] = lerp(vert[pair.x], vert[pair.y], lerpVal);
+        //vertlist[i] = (vert[pair.x] + vert[pair.y]) / 2.0f;
+        //normals[i] = normalize(lerp(grad[pair.x], grad[pair.y], lerpVal));
+    }
+    
+    uint i1, i2, i3, memIndex;
+    
+    for (i = 0; triTable[cubeindex][i] != -1; i += 3)
+    {
+        i1 = triTable[cubeindex][i];
+        i2 = triTable[cubeindex][i+1];
+        i3 = triTable[cubeindex][i+2];
+        
+        Triangle tri;
+        tri.vert1.pos = vertlist[i1];
+        tri.vert2.pos = vertlist[i2];
+        tri.vert3.pos = vertlist[i3];
+        
+        float3 norm = triangleNorm(tri.vert1.pos, tri.vert2.pos, tri.vert3.pos);
+        
+        //tri.vert1.normal = normals[i1];
+        //tri.vert2.normal = normals[i2];
+        //tri.vert3.normal = normals[i3];
+        
+        tri.vert1.normal = norm;
+        tri.vert2.normal = norm;
+        tri.vert3.normal = norm;
+        trianglesBuf.Append(tri);
+        
+        
+        //memIndex = counter.IncrementCounter() * 3; // returns pre incremented index; (i.e. i++)
+        
+        //WriteVertex(memIndex, vertlist[i1], normals[i1]);
+        //WriteVertex(memIndex + 1, vertlist[i2], normals[i2]);
+        //WriteVertex(memIndex + 2, vertlist[i3], normals[i3]);
+        //WriteIndices(memIndex, uint3(memIndex, memIndex + 1, memIndex + 2));
+    }
+}
+
+//[numthreads(64, 1, 1)]
+//void ClearUnused(uint id : SV_DispatchThreadID)
+//{
+//    while (true)
+//    {
+//        uint count = counter.IncrementCounter();
+//        if (count >= MaxTriangle)
+//            break;
+//        uint vidx = count * 3;
+//        WriteVertex(vidx + 0, 0, 0);
+//        WriteVertex(vidx + 1, 0, 0);
+//        WriteVertex(vidx + 2, 0, 0);
+//        WriteIndices(vidx, uint3(0, 0, 0));
+//    }
+//}
