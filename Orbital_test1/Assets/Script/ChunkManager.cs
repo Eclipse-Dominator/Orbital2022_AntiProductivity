@@ -117,8 +117,14 @@ public class ChunkManager : MonoBehaviour
             unloadChunks();
             loadChunks();
         }
+        //updateChunk();
     }
 
+    private void updateChunk()
+    {
+        Chunk currChunk = chunkMapper[lastPlayerChunkIndex];
+        m_generator.changeChunk(currChunk, playerCharacter.position, 10);
+    }
     private void checkChunkChange()
     {
         float chunkSize = m_generator.chunkSize;

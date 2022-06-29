@@ -1,0 +1,29 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel TerrainUpdate
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWStructuredBuffer<float> points;
+float3 centerPos;
+float radius;
+int numOfPt;
+float chunkSize;
+float subtractValue = 0.5;
+
+static int index(uint3 id)
+{
+    return id.z + numOfPt * (id.y + numOfPt * id.x);
+}
+
+[numthreads(8,8,8)]
+void TerrainUpdate (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= numOfPt)) 
+        return;
+    float3 worldpos = id * chunkSize / (numOfPt - 1);
+    if (dot(worldpos - centerPos, centerPos) >= radius * radius)
+        return;
+    
+    int pos = index(id);
+    points[pos] -= subtractValue;
+}

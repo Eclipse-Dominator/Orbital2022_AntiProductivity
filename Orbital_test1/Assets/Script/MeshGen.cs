@@ -12,6 +12,7 @@ public class MeshGen : MonoBehaviour
     public bool changed = true;
 
     public ComputeShader marcher;
+    public ComputeShader terrainChanger;
     struct Vertex
     {
         public Vector3 pos;
@@ -71,6 +72,21 @@ public class MeshGen : MonoBehaviour
             OnValidate();
         }
 
+    }
+
+     public void changeChunk(Chunk chunk, Vector3 pos, float radius)
+    {
+        Debug.Log(pos);
+        int numThread = Mathf.CeilToInt((float)chunkRes / renderThreads);
+        terrainChanger.SetBuffer(0,"points", chunk.voxel);
+        terrainChanger.SetFloats("centerPos", new float[] { pos.x, pos.y, pos.z });
+        terrainChanger.SetFloat("radius", radius);
+        terrainChanger.SetFloat("chunkSize", chunkSize);
+        terrainChanger.SetInt("numOfPt", chunkRes + 1);
+
+        terrainChanger.Dispatch(0, numThread, numThread, numThread);
+        chunk.AllocateMeshBuffer((int)maxTriangles * 3);
+        GenerateMesh(chunk);
     }
 
     private void OnValidate()
